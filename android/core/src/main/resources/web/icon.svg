@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" shape-rendering="geometricPrecision">
+  <rect width="512" height="512" rx="96" fill="#f5d36b"/>
+  <rect x="0" y="0" width="512" height="84" fill="#c1392b"/>
+  <g fill="#7a1f17">
+    <circle cx="128" cy="42" r="14"/>
+    <circle cx="256" cy="42" r="14"/>
+    <circle cx="384" cy="42" r="14"/>
+  </g>
+  <g stroke="#5b8fcc" stroke-width="3" stroke-linecap="round">
+    <line x1="80" y1="178" x2="432" y2="178"/>
+    <line x1="80" y1="240" x2="432" y2="240"/>
+    <line x1="80" y1="302" x2="432" y2="302"/>
+    <line x1="80" y1="364" x2="432" y2="364"/>
+    <line x1="80" y1="426" x2="432" y2="426"/>
+  </g>
+  <g stroke="#222" stroke-width="10" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <polyline points="98,172 116,188 152,148"/>
+    <polyline points="98,296 116,312 152,272"/>
+  </g>
+  <g fill="#222">
+    <rect x="170" y="160" width="180" height="14" rx="4"/>
+    <rect x="170" y="222" width="240" height="14" rx="4" opacity="0.35"/>
+    <rect x="170" y="284" width="200" height="14" rx="4"/>
+    <rect x="170" y="346" width="220" height="14" rx="4" opacity="0.35"/>
+    <rect x="170" y="408" width="160" height="14" rx="4" opacity="0.35"/>
+  </g>
+</svg>

@@ -159,6 +159,13 @@ test("PWA: manifest is valid and service worker registers", async ({ page }) => 
   expect(manifest.start_url).toBe("/");
   expect(Array.isArray(manifest.icons)).toBe(true);
 
+  // notepad favicon: SVG is referenced and served with the right content type
+  await expect(page.locator('link[rel="icon"][type="image/svg+xml"]')).toHaveAttribute("href", "/icon.svg");
+  const svgResp = await page.request.get("/icon.svg");
+  expect(svgResp.ok()).toBeTruthy();
+  expect(svgResp.headers()["content-type"]).toContain("svg");
+  expect(await svgResp.text()).toContain("<svg");
+
   const swReady = await page.evaluate(async () => {
     if (!("serviceWorker" in navigator)) return false;
     const reg = await navigator.serviceWorker.ready;
@@ -212,6 +219,13 @@ test("reorder: a left and right drag handle render on every row", async ({ page 
   await addItem(page, "bread");
   await expect(page.locator("li.item[data-id] .handle-left")).toHaveCount(3);
   await expect(page.locator("li.item[data-id] .handle-right")).toHaveCount(3);
+  // the right handle is intentionally much wider than the left for an easier touch target
+  const [leftW, rightW] = await page.evaluate(() => {
+    const l = document.querySelector("li.item[data-id] .handle-left") as HTMLElement;
+    const r = document.querySelector("li.item[data-id] .handle-right") as HTMLElement;
+    return [l.offsetWidth, r.offsetWidth];
+  });
+  expect(rightW).toBeGreaterThanOrEqual(leftW * 2);
 });
 
 test("undo: deleting a single item shows toast and restores on Undo", async ({ page }) => {

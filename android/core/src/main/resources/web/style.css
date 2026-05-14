@@ -69,7 +69,7 @@ li.item .handle {
   user-select: none;
 }
 li.item .handle:active { cursor: grabbing; }
-li.item .handle-right { margin-left: 4px; }
+li.item .handle-right { margin-left: 4px; width: 72px; }
 li.item.sortable-ghost { opacity: 0.35; }
 li.item.sortable-chosen { background: rgba(127, 127, 127, 0.08); }
 li.item .check {

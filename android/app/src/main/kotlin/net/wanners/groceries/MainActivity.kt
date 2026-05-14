@@ -118,7 +118,16 @@ private fun Body(padding: PaddingValues) {
         Spacer(Modifier.height(8.dp))
 
         if (state.running) {
-            Button(onClick = { ServerService.stop(ctx) }, modifier = Modifier.fillMaxWidth()) {
+            Button(
+                onClick = { openInBrowser(ctx, "http://localhost:${ServerService.PORT}") },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Edit list")
+            }
+            OutlinedButton(
+                onClick = { ServerService.stop(ctx) },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
                 Text("Stop server")
             }
         } else {
