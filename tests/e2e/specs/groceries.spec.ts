@@ -15,7 +15,23 @@ test.beforeEach(async ({ request }) => {
 async function addItem(page: Page, text: string) {
   await page.locator("#text").fill(text);
   await page.locator("#text").press("Enter");
-  await expect(page.locator("li.item .text", { hasText: text })).toBeVisible();
+  // Wait for the row to be both visible AND reconciled with a real server id.
+  // Otherwise a follow-up click/long-press fires a PATCH/DELETE against the
+  // optimistic "tmp-…" id, the server 404s, and the local toggle reverts.
+  const row = page.locator("li.item").filter({
+    has: page.locator(".text", { hasText: text }),
+  });
+  await expect(row).toBeVisible();
+  await expect(row).not.toHaveAttribute("data-id", /^tmp-/);
+}
+
+async function waitForSse(page: Page) {
+  // SSE handshake completes well within this window over LAN; if it hasn't, the
+  // page isn't subscribed to broadcasts and tests that depend on receiving them
+  // would fail intermittently.
+  await page.waitForFunction(() => document.body.dataset.sse === "open", null, {
+    timeout: 5_000,
+  });
 }
 
 test("add flow: type, Enter, see row", async ({ page }) => {
@@ -110,6 +126,100 @@ test("delete flow: long-press removes row", async ({ page }) => {
   await expect(page.locator("li.item .text", { hasText: "bread" })).toHaveCount(0);
 });
 
+test("optimistic row: interactions are no-op until reconcile finishes", async ({ page }) => {
+  // Stall the add POST so we can interact with the optimistic row while it still
+  // has a "tmp-…" id. Without the gate, the long-press would fire DELETE on the
+  // tmp- id (server 404 → treated as success → phantom "Deleted" toast) and the
+  // server would later add the item via the still-in-flight POST.
+  let releaseAdd!: () => void;
+  const addReleased = new Promise<void>((r) => { releaseAdd = r; });
+  let phantomDelete = false;
+  let phantomPatch = false;
+  await page.route("**/api/items/tmp-*", async (route) => {
+    const m = route.request().method();
+    if (m === "DELETE") phantomDelete = true;
+    if (m === "PATCH") phantomPatch = true;
+    return route.fulfill({ status: 404, body: "" });
+  });
+  await page.route("**/api/items", async (route) => {
+    if (route.request().method() === "POST") {
+      await addReleased;
+      return route.continue();
+    }
+    return route.continue();
+  });
+
+  await page.goto("/");
+  await page.locator("#text").fill("milk");
+  await page.locator("#text").press("Enter");
+  const tmpRow = page.locator('li.item[data-id^="tmp-"]');
+  await expect(tmpRow).toBeVisible();
+
+  // Long-press the optimistic row — should be ignored (no DELETE, no toast)
+  const text = tmpRow.locator(".text");
+  await text.hover();
+  await page.mouse.down();
+  await page.waitForTimeout(800);
+  await page.mouse.up();
+  await expect(page.locator("#toast")).toBeHidden();
+
+  // Tap the optimistic row — should be ignored (no PATCH)
+  await tmpRow.click();
+
+  expect(phantomDelete).toBe(false);
+  expect(phantomPatch).toBe(false);
+
+  // Release the POST; the row reconciles to a real id and is interactive again.
+  releaseAdd();
+  await expect(page.locator('li.item[data-id^="tmp-"]')).toHaveCount(0);
+  await expect(page.locator('li.item:not([data-id^="tmp-"])')).toHaveCount(1);
+});
+
+test("optimistic row: a refresh mid-flight doesn't wipe the pending row", async ({ page }) => {
+  // The "online" event (and the initial page-load refresh, and SSE-error retries)
+  // all call refresh(), which fetches /api/items from the server. The server
+  // doesn't know about an in-flight POST yet, so its response must not clobber
+  // local tmp- optimistics — otherwise a fast-typing user (or a paste while a
+  // refresh is in flight) sees their row vanish.
+  let releasePost!: () => void;
+  const postReleased = new Promise<void>((r) => { releasePost = r; });
+  await page.route("**/api/items", async (route) => {
+    if (route.request().method() === "POST") {
+      await postReleased;
+      return route.continue();
+    }
+    return route.continue();
+  });
+  await page.goto("/");
+  await page.locator("#text").fill("milk");
+  await page.locator("#text").press("Enter");
+  await expect(page.locator("li.item .text", { hasText: "milk" })).toBeVisible();
+  // Fire a refresh while POST is still held — this used to wipe the optimistic.
+  await page.evaluate(() => window.dispatchEvent(new Event("online")));
+  await expect(page.locator("li.item .text", { hasText: "milk" })).toBeVisible();
+  // Release POST; reconciles to real id, still one row.
+  releasePost();
+  await expect(
+    page.locator('li.item:not([data-id^="tmp-"]) .text', { hasText: "milk" }),
+  ).toBeVisible();
+  await expect(page.locator("li.item:not(.empty)")).toHaveCount(1);
+});
+
+test("optimistic row: stuck POST is aborted and the row is cleaned up", async ({ page }) => {
+  // Hang the POST forever. The client's per-add timeout should fire, abort the
+  // fetch, and remove the optimistic row so it doesn't linger as a tmp-…  ghost.
+  await page.route("**/api/items", (route) => {
+    if (route.request().method() === "POST") return; // never responds
+    return route.continue();
+  });
+  await page.goto("/");
+  await page.locator("#text").fill("ghost");
+  await page.locator("#text").press("Enter");
+  await expect(page.locator('li.item[data-id^="tmp-"]')).toBeVisible();
+  // ADD_TIMEOUT_MS is 8s; give comfortable margin for the abort + render.
+  await expect(page.locator('li.item[data-id^="tmp-"]')).toHaveCount(0, { timeout: 12_000 });
+});
+
 test("live sync: change in context A appears in context B via SSE", async ({ browser }) => {
   const ctxA = await browser.newContext();
   const ctxB = await browser.newContext();
@@ -118,8 +228,9 @@ test("live sync: change in context A appears in context B via SSE", async ({ bro
   try {
     await pageA.goto("/");
     await pageB.goto("/");
+    // B must be subscribed before A broadcasts, or the event is lost in transit.
+    await waitForSse(pageB);
     await addItem(pageA, "yogurt");
-    // B should see it within ~2s via SSE
     await expect(pageB.locator("li.item .text", { hasText: "yogurt" })).toBeVisible({
       timeout: 3_000,
     });

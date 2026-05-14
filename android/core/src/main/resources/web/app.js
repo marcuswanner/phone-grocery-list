@@ -29,11 +29,12 @@ const api = {
     if (!r.ok) throw new Error("list failed");
     return r.json();
   },
-  async add(text) {
+  async add(text, signal) {
     const r = await fetch("/api/items", {
       method: "POST",
       headers: JSON_WRITE_HEADERS,
       body: JSON.stringify({ text }),
+      signal,
     });
     if (!r.ok) throw new Error("add failed");
     return r.json();
@@ -187,7 +188,14 @@ function attachRowHandlers(li) {
   li.addEventListener("row-abort", onAbort);
 }
 
+// Optimistic rows have a "tmp-…" id until the POST returns and reconcile() swaps
+// in the real id. PATCHing or DELETEing the tmp- id would 404, and (worse) for
+// DELETE we treat 404 as success — so the user would see a "Deleted" toast for
+// an item the server is about to add via the still-in-flight POST.
+function isPending(id) { return typeof id === "string" && id.startsWith("tmp-"); }
+
 async function onToggle(id) {
+  if (isPending(id)) return;
   const item = state.items.find((x) => x.id === id);
   if (!item) return;
   item.done = !item.done;
@@ -201,6 +209,7 @@ async function onToggle(id) {
 }
 
 async function onDelete(id) {
+  if (isPending(id)) return;
   const idx = state.items.findIndex((x) => x.id === id);
   if (idx < 0) return;
   const removed = state.items[idx];
@@ -247,12 +256,32 @@ function reconcile(optimisticId, saved) {
   // else: SSE already merged this item under the optimistic's slot — no change, no render
 }
 
+// If the POST stalls (server hung, network mid-flight), the optimistic row
+// would otherwise sit as "tmp-…" forever — wrong UI state and (with the
+// optimistic-interaction gate above) untoggleable / undeletable. Abort the
+// fetch after this deadline so the catch arm removes the row.
+const ADD_TIMEOUT_MS = 8_000;
+
+function newTmpId() {
+  return `tmp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
+async function postAddWithTimeout(text) {
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), ADD_TIMEOUT_MS);
+  try {
+    return await api.add(text, ac.signal);
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 async function addOne(text) {
-  const optimistic = { id: `tmp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, text, done: false };
+  const optimistic = { id: newTmpId(), text, done: false };
   state.items.push(optimistic);
   render();
   try {
-    const saved = await api.add(text);
+    const saved = await postAddWithTimeout(text);
     reconcile(optimistic.id, saved);
     return saved;
   } catch {
@@ -263,16 +292,12 @@ async function addOne(text) {
 }
 
 async function addMany(items) {
-  const tmps = items.map((text) => ({
-    id: `tmp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-    text,
-    done: false,
-  }));
+  const tmps = items.map((text) => ({ id: newTmpId(), text, done: false }));
   for (const t of tmps) state.items.push(t);
   render();
   for (let i = 0; i < items.length; i++) {
     try {
-      const saved = await api.add(items[i]);
+      const saved = await postAddWithTimeout(items[i]);
       reconcile(tmps[i].id, saved);
     } catch {
       const idx = state.items.findIndex((x) => x.id === tmps[i].id);
@@ -454,19 +479,31 @@ function openEvents() {
     setOnline(false);
     return;
   }
-  es.addEventListener("open", () => setOnline(true));
+  es.addEventListener("open", () => {
+    setOnline(true);
+    // Test hook: lets a second page wait until its SSE subscription is live before
+    // expecting to receive broadcasts. Cheap to set, harmless in production.
+    document.body.dataset.sse = "open";
+  });
   es.addEventListener("change", (e) => {
     try { applyChange(JSON.parse(e.data)); } catch {}
   });
   es.addEventListener("error", () => {
     setOnline(false);
+    document.body.dataset.sse = "closed";
     setTimeout(refresh, 2000);
   });
 }
 
 async function refresh() {
   try {
-    state.items = await api.list();
+    const remote = await api.list();
+    // Preserve in-flight optimistics: their POST hasn't returned yet, so the
+    // server doesn't know about them. Wiping them here (initial-refresh-vs-fast-
+    // user-input race, or SSE-error-triggered re-sync mid-paste) would erase rows
+    // the user just added and would orphan the still-pending addOne's reconcile.
+    const pending = state.items.filter((x) => x.id.startsWith("tmp-"));
+    state.items = [...remote, ...pending];
     setOnline(true);
     render();
     if (!es || es.readyState === 2) openEvents();

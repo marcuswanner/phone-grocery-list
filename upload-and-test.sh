@@ -26,8 +26,21 @@ else
   exit 1
 fi
 
-DEVICE_LINES="$("$ADB" devices | awk 'NR>1 && $2=="device" {print $1}')"
-DEVICE_COUNT="$(printf '%s\n' "$DEVICE_LINES" | grep -c . || true)"
+count_online() { "$ADB" devices | awk 'NR>1 && $2=="device" {print $1}' | grep -c . || true; }
+count_offline() { "$ADB" devices | awk 'NR>1 && $2=="offline" {print $1}' | grep -c . || true; }
+
+# Wireless adb (TLS) connections frequently go to "offline" between sessions —
+# `adb reconnect offline` re-handshakes without making the user re-pair.
+if [ "$(count_online)" -eq 0 ] && [ "$(count_offline)" -ge 1 ]; then
+  echo "==> adb device is offline — running 'adb reconnect offline'"
+  "$ADB" reconnect offline >/dev/null 2>&1 || true
+  for _ in 1 2 3 4 5 6; do
+    [ "$(count_online)" -ge 1 ] && break
+    sleep 1
+  done
+fi
+
+DEVICE_COUNT="$(count_online)"
 if [ "$DEVICE_COUNT" -ne 1 ]; then
   echo "expected exactly one authorised adb device, got $DEVICE_COUNT:" >&2
   "$ADB" devices >&2
@@ -64,8 +77,11 @@ restore_items() {
 
 trap restore_items EXIT
 
+echo "==> Force-stop old app (so install doesn't wait on the running service)"
+"$ADB" shell "am force-stop $PKG" >/dev/null 2>&1 || true
+
 echo "==> Build & install (gradle :app:installDebug)"
-( cd "$HERE/android" && ./gradlew -q :app:installDebug )
+( cd "$HERE/android" && ./gradlew :app:installDebug )
 
 echo "==> Back up phone's items.json"
 backup_items
