@@ -17,6 +17,12 @@ const state = {
   longPressFired: false,
 };
 
+// Custom header required on every write so a malicious cross-origin page can't
+// forge state-changing requests: the custom header forces a preflight, which the
+// server (no CORS plugin) refuses. Same-origin PWA fetches still work fine.
+const CLIENT_HEADERS = { "X-Grocery-Client": "1" };
+const JSON_WRITE_HEADERS = { "content-type": "application/json", ...CLIENT_HEADERS };
+
 const api = {
   async list() {
     const r = await fetch("/api/items", { cache: "no-store" });
@@ -26,7 +32,7 @@ const api = {
   async add(text) {
     const r = await fetch("/api/items", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: JSON_WRITE_HEADERS,
       body: JSON.stringify({ text }),
     });
     if (!r.ok) throw new Error("add failed");
@@ -35,34 +41,34 @@ const api = {
   async patch(id, body) {
     const r = await fetch(`/api/items/${id}`, {
       method: "PATCH",
-      headers: { "content-type": "application/json" },
+      headers: JSON_WRITE_HEADERS,
       body: JSON.stringify(body),
     });
     if (!r.ok) throw new Error("patch failed");
     return r.json();
   },
   async remove(id) {
-    const r = await fetch(`/api/items/${id}`, { method: "DELETE" });
+    const r = await fetch(`/api/items/${id}`, { method: "DELETE", headers: CLIENT_HEADERS });
     if (!r.ok && r.status !== 404) throw new Error("delete failed");
   },
   async clearDone() {
-    const r = await fetch("/api/clear-done", { method: "POST" });
+    const r = await fetch("/api/clear-done", { method: "POST", headers: CLIENT_HEADERS });
     if (!r.ok) throw new Error("clear-done failed");
   },
   async clearAll() {
-    const r = await fetch("/api/clear-all", { method: "POST" });
+    const r = await fetch("/api/clear-all", { method: "POST", headers: CLIENT_HEADERS });
     if (!r.ok) throw new Error("clear-all failed");
   },
   async reorder(ids) {
     const r = await fetch("/api/reorder", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: JSON_WRITE_HEADERS,
       body: JSON.stringify({ ids }),
     });
     if (!r.ok) throw new Error("reorder failed");
   },
   async undo() {
-    const r = await fetch("/api/undo", { method: "POST" });
+    const r = await fetch("/api/undo", { method: "POST", headers: CLIENT_HEADERS });
     if (!r.ok) throw new Error("undo failed");
     return r.json();
   },
@@ -287,15 +293,23 @@ async function onAdd(e) {
   }
 }
 
+const PASTE_LIMIT = 500;
+
 function onPaste(e) {
   const raw = (e.clipboardData || window.clipboardData)?.getData("text") || "";
   if (!/[\r\n]/.test(raw)) return; // single line — let the browser handle it
   e.preventDefault();
-  const items = parseList(raw);
+  let items = parseList(raw);
   if (items.length === 0) return;
+  let truncated = 0;
+  if (items.length > PASTE_LIMIT) {
+    truncated = items.length;
+    items = items.slice(0, PASTE_LIMIT);
+  }
   inputEl.value = "";
   if (items.length === 1) addOne(items[0]).catch(() => { inputEl.value = items[0]; });
   else addMany(items);
+  if (truncated > 0) showUndoToast(`Pasted ${PASTE_LIMIT} of ${truncated} lines`);
 }
 
 function applyChange(ev) {

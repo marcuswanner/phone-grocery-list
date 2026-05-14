@@ -1,13 +1,16 @@
 package net.wanners.groceries
 
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.io.IOException
 import java.security.SecureRandom
 
 @Serializable
@@ -32,10 +35,18 @@ sealed interface Change {
     data class Reordered(val ids: List<String>) : Change
 }
 
-class Store(private val file: File) {
+class Store(
+    private val file: File,
+    private val maxItems: Int = DEFAULT_MAX_ITEMS,
+) {
     private val mutex = Mutex()
     private val items: MutableList<Item> = mutableListOf()
-    private val _changes = MutableSharedFlow<Change>(extraBufferCapacity = 64)
+    // DROP_OLDEST so a slow/stalled SSE subscriber can never wedge `emit` and block writers.
+    // A laggy client misses intermediate events but `refresh()` on reconnect re-syncs.
+    private val _changes = MutableSharedFlow<Change>(
+        extraBufferCapacity = 64,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
     val changes: SharedFlow<Change> = _changes.asSharedFlow()
 
     // Single-step trash for undo. Replaced by every destructive op.
@@ -49,9 +60,12 @@ class Store(private val file: File) {
     fun snapshot(): List<Item> = synchronized(items) { items.toList() }
 
     suspend fun add(text: String): Item {
-        require(text.isNotBlank()) { "text required" }
-        val item = Item(id = newId(), text = text.trim(), done = false)
+        val clean = sanitize(text)
+        require(clean.isNotBlank()) { "text required" }
+        val item = Item(id = newId(), text = clean, done = false)
         mutex.withLock {
+            val size = synchronized(items) { items.size }
+            require(size < maxItems) { "list_full" }
             synchronized(items) { items.add(item) }
             persist()
         }
@@ -60,12 +74,13 @@ class Store(private val file: File) {
     }
 
     suspend fun update(id: String, text: String? = null, done: Boolean? = null): Item? {
+        val cleanedText = text?.let { sanitize(it) }?.takeIf { it.isNotEmpty() }
         val updated: Item? = mutex.withLock {
             val current = synchronized(items) {
                 val idx = items.indexOfFirst { it.id == id }
                 if (idx < 0) return@withLock null
                 val merged = items[idx].copy(
-                    text = text?.trim()?.takeIf { it.isNotEmpty() } ?: items[idx].text,
+                    text = cleanedText ?: items[idx].text,
                     done = done ?: items[idx].done,
                 )
                 items[idx] = merged
@@ -98,7 +113,7 @@ class Store(private val file: File) {
             }
             if (trash.isNotEmpty()) {
                 synchronized(items) { items.removeAll { it.done } }
-                lastDeleted = trash
+                lastDeleted = trash.takeLast(MAX_TRASH)
                 persist()
             }
             trash.map { it.item.id }
@@ -112,7 +127,7 @@ class Store(private val file: File) {
             val trash = synchronized(items) { items.mapIndexed { idx, item -> TrashEntry(item, idx) } }
             if (trash.isNotEmpty()) {
                 synchronized(items) { items.clear() }
-                lastDeleted = trash
+                lastDeleted = trash.takeLast(MAX_TRASH)
                 persist()
             }
             trash.map { it.item.id }
@@ -170,23 +185,51 @@ class Store(private val file: File) {
         val tmp = File(file.parentFile, "${file.name}.tmp")
         tmp.writeText(json.encodeToString(LIST_SERIALIZER, snapshot))
         if (!tmp.renameTo(file)) {
-            file.writeText(tmp.readText())
+            // Don't do a non-atomic fallback rewrite: if rename failed, the disk or parent
+            // dir is broken, and a partial overwrite would risk destroying the existing
+            // good file. Let the caller see the failure.
             tmp.delete()
+            throw IOException("could not atomically replace ${file.name}")
         }
     }
 
     private fun load() {
         if (!file.exists()) return
-        val text = runCatching { file.readText() }.getOrNull() ?: return
+        // Don't swallow IOException — surface broken storage to the caller instead
+        // of starting empty (and then overwriting the bad file with an empty list).
+        val text = file.readText()
         if (text.isBlank()) return
-        val parsed = runCatching { json.decodeFromString(LIST_SERIALIZER, text) }.getOrNull() ?: return
+        val parsed = try {
+            json.decodeFromString(LIST_SERIALIZER, text)
+        } catch (e: SerializationException) {
+            // Move the bad file aside so the next persist() doesn't overwrite it.
+            val parent = file.parentFile
+            if (parent != null) {
+                file.renameTo(File(parent, "${file.name}.corrupt-${System.currentTimeMillis()}"))
+            }
+            throw IllegalStateException("items.json corrupted; moved aside", e)
+        }
         synchronized(items) {
             items.clear()
             items.addAll(parsed)
         }
     }
 
+    // Strip ASCII C0 (sans tab), C1, and bidi overrides (U+202A–U+202E, U+2066–U+2069).
+    // Keeps log lines clean and prevents RTL spoofing in the rendered list.
+    private fun sanitize(s: String): String = buildString(s.length) {
+        for (c in s) {
+            val code = c.code
+            val isC0 = code in 0x00..0x1F && code != 0x09
+            val isC1 = code in 0x80..0x9F
+            val isBidi = code in 0x202A..0x202E || code in 0x2066..0x2069
+            if (!isC0 && !isC1 && !isBidi) append(c)
+        }
+    }.trim()
+
     companion object {
+        const val DEFAULT_MAX_ITEMS = 5_000
+        const val MAX_TRASH = 5_000
         private val json = Json {
             ignoreUnknownKeys = true
             encodeDefaults = true

@@ -53,7 +53,21 @@ class ServerService : LifecycleService() {
         if (server != null) return
 
         val itemsFile = File(filesDir, "items.json")
-        val store = Store(itemsFile).also { this.store = it }
+        val store = try {
+            Store(itemsFile)
+        } catch (e: IllegalStateException) {
+            // items.json is corrupted; the constructor moved it aside. Surface the
+            // failure to the UI instead of silently starting with an empty list and
+            // overwriting the renamed-aside file on the first write.
+            ServerHolder.mutate { ServerState(error = "data_corrupt: ${e.message ?: "items.json unreadable"}") }
+            stopSelf()
+            return
+        } catch (e: Throwable) {
+            ServerHolder.mutate { ServerState(error = "load_failed: ${e.message ?: e::class.simpleName}") }
+            stopSelf()
+            return
+        }
+        this.store = store
 
         val ips = lanIPv4Addresses()
         val port = PORT

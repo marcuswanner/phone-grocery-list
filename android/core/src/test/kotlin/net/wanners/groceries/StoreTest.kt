@@ -4,6 +4,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -39,6 +40,35 @@ class StoreTest {
         val (store, _) = newStore(dir)
         val item = store.add("  eggs  ")
         assertEquals("eggs", item.text)
+    }
+
+    @Test
+    fun `add strips control chars and bidi overrides`(@TempDir dir: File) = runTest {
+        val (store, _) = newStore(dir)
+        // U+202E (RIGHT-TO-LEFT OVERRIDE), embedded NUL, and a CR are all stripped.
+        val item = store.add("\u202Eevi\u0000l\rtext")
+        assertEquals("eviltext", item.text)
+    }
+
+    @Test
+    fun `add preserves tab as the one allowed C0`(@TempDir dir: File) = runTest {
+        val (store, _) = newStore(dir)
+        val item = store.add("a\tb")
+        assertEquals("a\tb", item.text)
+    }
+
+    @Test
+    fun `add rejects text that is purely control chars after sanitize`(@TempDir dir: File) = runTest {
+        val (store, _) = newStore(dir)
+        assertThrows<IllegalArgumentException> { store.add("\u202E \u2066") }
+    }
+
+    @Test
+    fun `update sanitizes text too`(@TempDir dir: File) = runTest {
+        val (store, _) = newStore(dir)
+        val item = store.add("milk")
+        val updated = store.update(item.id, text = "\u202Eoat milk")
+        assertEquals("oat milk", updated?.text)
     }
 
     @Test
@@ -244,13 +274,15 @@ class StoreTest {
     }
 
     @Test
-    fun `corrupt file falls back to empty list`(@TempDir dir: File) = runTest {
+    fun `corrupt file is moved aside and constructor throws`(@TempDir dir: File) {
         val file = File(dir, "items.json")
         file.writeText("{not valid json")
-        val store = Store(file)
-        assertEquals(emptyList<Item>(), store.snapshot())
-        val item = store.add("milk")
-        assertEquals(listOf(item), store.snapshot())
+        assertThrows<IllegalStateException> { Store(file) }
+        // The original bad file is renamed aside so the next persist() won't clobber it.
+        assertFalse(file.exists(), "corrupt file should have been renamed away")
+        val aside = dir.listFiles { _, name -> name.startsWith("items.json.corrupt-") }
+        assertNotNull(aside)
+        assertEquals(1, aside!!.size)
     }
 
     @Test
@@ -313,5 +345,30 @@ class StoreTest {
         repeat(1000) {
             assertTrue(pattern.matches(Store.newId()))
         }
+    }
+
+    @Test
+    fun `add returns promptly even when a subscriber never drains`(@TempDir dir: File) = runTest {
+        val (store, _) = newStore(dir)
+        coroutineScope {
+            val sub = launch {
+                store.changes.collect {
+                    // Simulate a stalled SSE client that never advances.
+                    kotlinx.coroutines.delay(Long.MAX_VALUE)
+                }
+            }
+            // 200 adds is well past the 64-slot buffer. With DROP_OLDEST these all complete.
+            for (i in 1..200) store.add("item-$i")
+            sub.cancel()
+        }
+        assertEquals(200, store.snapshot().size)
+    }
+
+    @Test
+    fun `add rejects once max items is reached`(@TempDir dir: File) = runTest {
+        val store = Store(File(dir, "items.json"), maxItems = 3)
+        store.add("a"); store.add("b"); store.add("c")
+        val e = assertThrows<IllegalArgumentException> { store.add("overflow") }
+        assertEquals("list_full", e.message)
     }
 }

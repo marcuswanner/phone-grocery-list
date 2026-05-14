@@ -13,6 +13,10 @@ data class Subnet(val baseBytes: ByteArray, val prefix: Int) {
     init {
         require(baseBytes.size == 4) { "only IPv4 supported" }
         require(prefix in 0..32) { "prefix must be 0..32" }
+        // Reject overly broad subnets. A real home/office interface has prefix >= 8
+        // (most are /16 or /24); anything below that is almost certainly user-supplied
+        // garbage that would accept the entire IPv4 space as "local".
+        require(prefix >= 8) { "prefix too broad" }
     }
 
     fun contains(addr: InetAddress): Boolean {

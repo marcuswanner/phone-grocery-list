@@ -36,10 +36,12 @@ class SubnetTest {
     }
 
     @Test
-    fun `slash-0 matches all IPv4`() {
-        val net = Subnet(bytesOf("0.0.0.0"), 0)
-        assertTrue(net.contains("8.8.8.8"))
-        assertTrue(net.contains("192.168.1.1"))
+    fun `prefix below 8 is rejected as too broad`() {
+        org.junit.jupiter.api.assertThrows<IllegalArgumentException> { Subnet(bytesOf("0.0.0.0"), 0) }
+        org.junit.jupiter.api.assertThrows<IllegalArgumentException> { Subnet(bytesOf("10.0.0.0"), 7) }
+        // /8 is the lower bound and must work.
+        val net = Subnet(bytesOf("10.0.0.0"), 8)
+        assertTrue(net.contains("10.255.255.255"))
     }
 
     @Test

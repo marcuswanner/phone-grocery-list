@@ -1,9 +1,11 @@
 import { test, expect, type Page, type APIRequestContext } from "@playwright/test";
 
+const CLIENT_HEADER = { "X-Grocery-Client": "1" };
+
 async function clearList(req: APIRequestContext) {
   const r = await req.get("/api/items");
   const items: { id: string }[] = await r.json();
-  for (const i of items) await req.delete(`/api/items/${i.id}`);
+  for (const i of items) await req.delete(`/api/items/${i.id}`, { headers: CLIENT_HEADER });
 }
 
 test.beforeEach(async ({ request }) => {
@@ -290,12 +292,52 @@ test("reorder: POST /api/reorder updates order and broadcasts via SSE", async ({
   const newOrder = [items[2].id, items[0].id, items[1].id]; // bread, milk, eggs
   const r = await page.request.post("/api/reorder", {
     data: { ids: newOrder },
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...CLIENT_HEADER },
   });
   expect(r.ok()).toBeTruthy();
   await expect
     .poll(async () => await page.locator("li.item .text").allTextContents())
     .toEqual(["bread", "milk", "eggs"]);
+});
+
+test("CSRF: a cross-origin page cannot POST a state-changing write", async ({ browser }) => {
+  // Chrome considers http://localhost:38080 and http://127.0.0.1:38080 different origins
+  // even though both hit the same server, which lets us simulate a cross-origin POST
+  // without standing up a second HTTP server.
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
+  try {
+    await page.route("http://localhost:38080/evil", (route) =>
+      route.fulfill({ status: 200, contentType: "text/html", body: "<!doctype html><title>evil</title>" }),
+    );
+    await page.goto("http://localhost:38080/evil");
+
+    // Seed an item so a successful clear-all would be observable.
+    await page.request.post("http://127.0.0.1:38080/api/items", {
+      data: { text: "victim" },
+      headers: { "content-type": "application/json", ...CLIENT_HEADER },
+    });
+
+    const attempt = await page.evaluate(async () => {
+      try {
+        const r = await fetch("http://127.0.0.1:38080/api/clear-all", {
+          method: "POST",
+          headers: { "X-Grocery-Client": "1" },
+        });
+        return { ok: r.ok, status: r.status };
+      } catch (e: unknown) {
+        return { ok: false, error: (e as Error).message };
+      }
+    });
+    // The browser may surface either a network error (preflight blocked) or a non-ok
+    // response; both are correct outcomes here.
+    expect(attempt.ok).toBe(false);
+
+    const items = await page.request.get("http://127.0.0.1:38080/api/items").then((r) => r.json());
+    expect(items.map((i: { text: string }) => i.text)).toContain("victim");
+  } finally {
+    await ctx.close();
+  }
 });
 
 test("offline shell: page loads from cache when network is gone", async ({ browser }) => {

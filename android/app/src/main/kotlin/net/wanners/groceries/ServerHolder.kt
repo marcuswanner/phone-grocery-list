@@ -11,6 +11,7 @@ data class ServerState(
     val mdnsHost: String? = null,
     val itemCount: Int = 0,
     val startedAt: Long = 0L,
+    val error: String? = null,
 )
 
 object ServerHolder {
