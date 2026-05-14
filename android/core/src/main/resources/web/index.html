@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#111" />
+<title>Groceries</title>
+<link rel="manifest" href="/manifest.webmanifest" />
+<link rel="icon" href="/icon-192.png" />
+<link rel="apple-touch-icon" href="/icon-192.png" />
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<header>
+  <h1>Groceries</h1>
+  <span id="status" class="status" aria-live="polite"></span>
+</header>
+<div class="actions" id="actions" hidden>
+  <button class="action-btn" id="clear-done" type="button" hidden></button>
+  <button class="action-btn danger" id="clear-all" type="button">Clear all</button>
+</div>
+<main>
+  <ul id="list" role="list"></ul>
+</main>
+<form id="add" autocomplete="off">
+  <input id="text" name="text" type="text" placeholder="add an item…" autocomplete="off" autocapitalize="sentences" enterkeyhint="done" />
+  <button type="submit" aria-label="add">+</button>
+</form>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden>
+  <span class="toast-text" id="toast-text"></span>
+  <button class="toast-action" id="toast-undo" type="button">Undo</button>
+</div>
+<script src="/sortable.min.js"></script>
+<script src="/app.js" type="module"></script>
+</body>
+</html>

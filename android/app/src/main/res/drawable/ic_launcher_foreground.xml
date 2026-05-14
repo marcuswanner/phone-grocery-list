@@ -1,0 +1,28 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- bread loaf body -->
+    <path
+        android:fillColor="#C68642"
+        android:pathData="M22,62 C22,42 36,30 54,30 C72,30 86,42 86,62 L86,78 C86,82 82,86 78,86 L30,86 C26,86 22,82 22,78 Z" />
+    <!-- highlight on top -->
+    <path
+        android:fillColor="#22FFFFFF"
+        android:pathData="M30,52 C30,42 40,36 54,36 C68,36 78,42 78,52 C78,54 76,55 74,54 C70,48 62,44 54,44 C46,44 38,48 34,54 C32,55 30,54 30,52 Z" />
+    <!-- three diagonal score marks -->
+    <path
+        android:fillColor="#8B5A2B"
+        android:pathData="M36,46 L46,58 L42,61 L32,49 Z" />
+    <path
+        android:fillColor="#8B5A2B"
+        android:pathData="M50,42 L60,54 L56,57 L46,45 Z" />
+    <path
+        android:fillColor="#8B5A2B"
+        android:pathData="M64,46 L74,58 L70,61 L60,49 Z" />
+    <!-- bottom shadow for depth -->
+    <path
+        android:fillColor="#338B5A2B"
+        android:pathData="M22,76 L86,76 L86,78 C86,82 82,86 78,86 L30,86 C26,86 22,82 22,78 Z" />
+</vector>

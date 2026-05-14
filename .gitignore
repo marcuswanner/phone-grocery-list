@@ -1,0 +1,11 @@
+tmp/
+android/.gradle/
+android/build/
+android/*/build/
+android/local.properties
+android/.idea/
+android/*.iml
+tests/e2e/node_modules/
+tests/e2e/test-results/
+tests/e2e/playwright-report/
+.DS_Store
