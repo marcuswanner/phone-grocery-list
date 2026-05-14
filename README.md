@@ -1,10 +1,10 @@
 # Groceries
 
-A silly little shared grocery list.
+A silly little mobile grocery list with a website for simultaneous edits.
 
-The Android phone *is* the server. A web UI is bundled inside the app and served over your local WiFi. From a Mac browser on the same network you open `http://groceries.local:8080`, add things, mark them done; the phone (and any other browser pointed at the same URL) sees the change live via Server-Sent Events. The list lives in one JSON file on the phone — no cloud, no account, no sync service.
+It's a web app in an Android app serving a shopping list editor over local WiFi. From any mDNS-supporting browser on the same network you open `http://groceries.local:8080`, add things, mark them done; the phone (and any other browser pointed at the same URL) sees the change live via Server-Sent Events. The list lives in one JSON file on the phone — no cloud, no account, no sync service.
 
-When the phone leaves the WiFi, the Mac can't see the list. That's fine: you're the one at the store with the phone.
+When the phone leaves the WiFi, the computers back at home can't see the list anymore. That's fine because the list needs to be at the store, not at home (claude had to be told this explicitly...it really still hasn't figured out physical logistics yet heh).
 
 ## Repository layout
 
@@ -16,11 +16,11 @@ tests/
   e2e/     Playwright tests driving the PWA against a real :core server.
 ```
 
-Two-module split exists so `:core` can be tested headlessly on the JVM and driven by Playwright without needing an emulator. The Android app is a thin shell on top.
+Two-module split exists so `:core` can be tested headlessly on the JVM and driven by Playwright without needing Android. The app itself is a thin shell on top.
 
 ## Build & install on a phone
 
-Prereqs (already on this Mac, see `~/.claude/projects/-Users-marcus-notes/memory/android_toolchain.md`):
+Prereqs:
 - Android Studio at `/Applications/Android Studio.app` (provides the JBR JDK 21 used to build)
 - Android SDK at `~/Library/Android/sdk`
 
@@ -36,7 +36,7 @@ JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradle
 1. Open the app. It will ask for **notification permission** — say yes (without it the foreground-service notification can't show, and Android may kill the server).
 2. Tap **Disable battery optimization** and confirm — otherwise Android Doze will kill the server when the screen is off.
 3. Tap **Start server**. A persistent notification appears with the URL. The screen shows:
-   - `http://groceries.local:8080` (Bonjour name — best to bookmark on the Mac)
+   - `http://groceries.local:8080` (Bonjour name — best to bookmark)
    - `http://<phone-IP>:8080` (raw LAN IP — survives Bonjour failures)
 4. On the phone, open Chrome → `http://localhost:8080` → menu → **Add to Home Screen**. You now have a standalone PWA.
 5. On the Mac, open Safari/Chrome → `http://groceries.local:8080`. Bookmark.
@@ -76,7 +76,6 @@ Not yet wired up; only needed for the foreground-service lifecycle and mDNS regi
 Some behavior is not worth automating:
 - Real Bonjour resolution from Mac → phone over real WiFi.
 - Android battery-optimization exemption flow (system UI).
-- "Add to Home Screen" Chrome UX on a real device.
 
 ## Plan
 
