@@ -112,7 +112,7 @@ test("toggle flow: click strikes through, click again un-strikes", async ({ page
   await expect(row).not.toHaveClass(/done/);
 });
 
-test("delete flow: long-press removes row", async ({ page }) => {
+test("delete flow: long-press shows confirm toast, tap Delete removes row", async ({ page }) => {
   await page.goto("/");
   await addItem(page, "bread");
   // Target the .text span specifically: the row's bounding-box center falls
@@ -123,7 +123,28 @@ test("delete flow: long-press removes row", async ({ page }) => {
   await page.mouse.down();
   await page.waitForTimeout(800);
   await page.mouse.up();
+  // Long-press now arms a confirmation in the toast instead of deleting outright.
+  await expect(page.locator("#toast")).toBeVisible();
+  await expect(page.locator("#toast-text")).toContainText("bread");
+  await expect(page.locator("#toast-undo")).toHaveText("Delete");
+  await page.locator("#toast-undo").click();
   await expect(page.locator("li.item .text", { hasText: "bread" })).toHaveCount(0);
+});
+
+test("delete flow: confirm toast cancels itself if the user does nothing", async ({ page }) => {
+  await page.goto("/");
+  await addItem(page, "bread");
+  const text = page.locator("li.item .text").first();
+  await text.hover();
+  await page.mouse.down();
+  await page.waitForTimeout(800);
+  await page.mouse.up();
+  await expect(page.locator("#toast")).toBeVisible();
+  // 3s timeout; give margin
+  await page.waitForTimeout(3500);
+  await expect(page.locator("#toast")).toBeHidden();
+  // Row is still there because we never confirmed.
+  await expect(page.locator("li.item .text", { hasText: "bread" })).toHaveCount(1);
 });
 
 test("optimistic row: interactions are no-op until reconcile finishes", async ({ page }) => {
@@ -240,6 +261,38 @@ test("live sync: change in context A appears in context B via SSE", async ({ bro
   }
 });
 
+test("reconnect: backoff grows exponentially across consecutive failures", async ({ browser }) => {
+  // Block both endpoints so each refresh() and openEvents() attempt fails — that
+  // keeps reconnectAttempts climbing instead of resetting on success, which is
+  // what makes the backoff visibly grow. Run in a fresh context so other tests'
+  // SSE state doesn't leak in.
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
+  try {
+    await page.route("**/api/items", (route) => route.fulfill({ status: 503, body: "" }));
+    await page.route("**/api/events", (route) => route.fulfill({ status: 503, body: "" }));
+    await page.goto("/");
+    // Need ≥3 reconnect attempts to compare two consecutive gaps. With backoff
+    // bases 1s/2s/4s and 0..500ms jitter, three attempts fit inside ~8s.
+    await page.waitForFunction(
+      () => (window as unknown as { __reconnectLog?: unknown[] }).__reconnectLog?.length! >= 3,
+      null,
+      { timeout: 12_000 },
+    );
+    const log = await page.evaluate(
+      () => (window as unknown as { __reconnectLog: { at: number; delay: number }[] }).__reconnectLog,
+    );
+    // Exponential = each delay at least 1.3x the previous. The base sequence is
+    // 1s/2s/4s and jitter adds up to 500ms, so the worst case is log[n-1] near
+    // its top (base + 500) vs log[n] at its bottom (next base + 0). For 1→2s:
+    // 1500/2000 = 1.33. Anything below 1.3 would mean backoff is flat, not growing.
+    expect(log[1].delay).toBeGreaterThan(log[0].delay * 1.3);
+    expect(log[2].delay).toBeGreaterThan(log[1].delay * 1.3);
+  } finally {
+    await ctx.close();
+  }
+});
+
 test("reconnect: B keeps receiving updates after a network blip", async ({ browser }) => {
   // Note: we don't assert "B doesn't see during offline" — Chromium sometimes keeps
   // an established SSE connection alive across setOffline, so that assertion was flaky.
@@ -292,6 +345,23 @@ test("PWA: manifest is valid and service worker registers", async ({ page }) => 
     return !!reg.active || !!reg.installing || !!reg.waiting;
   });
   expect(swReady).toBeTruthy();
+});
+
+test("clear done: appears to the right of clear all, not in front of it", async ({ page }) => {
+  // The "Clear all" button is fixed in position; "Clear N done" appears to its
+  // right when there's anything done. Earlier the order was reversed, so adding
+  // a checked item shifted "Clear all" to the right and changed where you had
+  // to tap to wipe everything — confusing.
+  await page.goto("/");
+  await addItem(page, "milk");
+  await addItem(page, "eggs");
+  await page.locator("li.item .text", { hasText: "milk" }).locator("..").click();
+  await expect(page.locator("#clear-done")).toBeVisible();
+  const [allLeft, doneLeft] = await page.evaluate(() => [
+    (document.getElementById("clear-all") as HTMLElement).getBoundingClientRect().left,
+    (document.getElementById("clear-done") as HTMLElement).getBoundingClientRect().left,
+  ]);
+  expect(allLeft).toBeLessThan(doneLeft);
 });
 
 test("clear done: removes only checked items in one tap", async ({ page }) => {
@@ -359,10 +429,14 @@ test("undo: deleting a single item shows toast and restores on Undo", async ({ p
   await page.mouse.down();
   await page.waitForTimeout(800);
   await page.mouse.up();
+  // Long-press now arms a delete-confirm toast; tap Delete to actually remove eggs.
+  await expect(page.locator("#toast-undo")).toHaveText("Delete");
+  await page.locator("#toast-undo").click();
   await expect(page.locator('li.item .text', { hasText: "eggs" })).toHaveCount(0);
-  // Toast appears
+  // Then the post-delete undo toast appears.
   await expect(page.locator("#toast")).toBeVisible();
   await expect(page.locator("#toast-text")).toContainText("eggs");
+  await expect(page.locator("#toast-undo")).toHaveText("Undo");
   // Tap Undo
   await page.locator("#toast-undo").click();
   // eggs is back, in its original middle slot
@@ -393,7 +467,10 @@ test("undo: toast auto-dismisses after 5 seconds", async ({ page }) => {
   await page.mouse.down();
   await page.waitForTimeout(800);
   await page.mouse.up();
-  await expect(page.locator("#toast")).toBeVisible();
+  // Confirm the delete first; then the post-delete undo toast is what auto-dismisses.
+  await expect(page.locator("#toast-undo")).toHaveText("Delete");
+  await page.locator("#toast-undo").click();
+  await expect(page.locator("#toast-undo")).toHaveText("Undo");
   await page.waitForTimeout(5500);
   await expect(page.locator("#toast")).toBeHidden();
 });

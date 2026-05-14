@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Allow cleartext HTTP only to loopback. The bundled WebView loads
+  http://localhost:8080 to talk to the in-app server; everything else stays
+  on the platform default (cleartext blocked) so external links can't slip
+  through if shouldOverrideUrlLoading is ever bypassed.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>

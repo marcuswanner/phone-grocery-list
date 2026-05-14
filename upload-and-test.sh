@@ -28,6 +28,19 @@ fi
 
 count_online() { "$ADB" devices | awk 'NR>1 && $2=="device" {print $1}' | grep -c . || true; }
 count_offline() { "$ADB" devices | awk 'NR>1 && $2=="offline" {print $1}' | grep -c . || true; }
+count_total() { "$ADB" devices | awk 'NR>1 && NF>0 {print $1}' | grep -c . || true; }
+
+# A fresh adb daemon hasn't yet discovered wireless-paired devices via mDNS.
+# Poke mDNS so the daemon starts scanning, then wait up to ~10s for it to
+# auto-attach the TLS-paired device. Cheap when a USB device is already present.
+if [ "$(count_total)" -eq 0 ]; then
+  echo "==> No adb devices yet — probing mDNS for a paired wireless device"
+  "$ADB" mdns services >/dev/null 2>&1 || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    [ "$(count_total)" -ge 1 ] && break
+    sleep 1
+  done
+fi
 
 # Wireless adb (TLS) connections frequently go to "offline" between sessions —
 # `adb reconnect offline` re-handshakes without making the user re-pair.

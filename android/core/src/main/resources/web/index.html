@@ -17,8 +17,11 @@
   <span id="status" class="status" aria-live="polite"></span>
 </header>
 <div class="actions" id="actions" hidden>
-  <button class="action-btn" id="clear-done" type="button" hidden></button>
+  <!-- Clear all kept first so it stays anchored to the left as the only fixed
+       action; clear-done appears to its right when done items exist instead of
+       sliding clear-all over to the right (confusing tap-target shift). -->
   <button class="action-btn danger" id="clear-all" type="button">Clear all</button>
+  <button class="action-btn" id="clear-done" type="button" hidden></button>
 </div>
 <main>
   <ul id="list" role="list"></ul>

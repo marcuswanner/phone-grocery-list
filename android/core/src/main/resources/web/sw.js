@@ -1,4 +1,4 @@
-const VERSION = "v5";
+const VERSION = "v12";
 const CACHE = `groceries-${VERSION}`;
 const SHELL = [
   "/",

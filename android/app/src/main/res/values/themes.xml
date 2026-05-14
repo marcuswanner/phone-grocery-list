@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Day variant. The night variant in res/values-night/themes.xml inherits from
+  the dark Material parent. The WebView's modern algorithmic-darkening pipeline
+  reads the host activity's theme (not Compose's isSystemInDarkTheme) to decide
+  whether to apply prefers-color-scheme:dark, so this theme has to track the
+  system instead of being hard-coded Light like before.
+-->
+<resources>
+    <style name="Theme.Groceries" parent="@android:style/Theme.Material.Light.NoActionBar" />
+</resources>

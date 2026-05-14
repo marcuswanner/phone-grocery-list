@@ -21,25 +21,24 @@ Two-module split exists so `:core` can be tested headlessly on the JVM and drive
 ## Build & install on a phone
 
 Prereqs:
-- Android Studio at `/Applications/Android Studio.app` (provides the JBR JDK 21 used to build)
-- Android SDK at `~/Library/Android/sdk`
+- JDK 21 (Android Studio bundles one — `Help → About → JBR location` shows the path on any OS, or use any system JDK 21). If Gradle can't find it, set `JAVA_HOME`.
+- Android SDK installed (Android Studio's SDK Manager shows the path; export `ANDROID_HOME` if Gradle complains). On macOS this is typically `~/Library/Android/sdk`.
 
 ```sh
 cd android
-JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:assembleDebug
+./gradlew :app:assembleDebug
 # install on a connected phone with USB-debugging on
-JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:installDebug
+./gradlew :app:installDebug
 ```
 
 ## First-launch flow on the phone
 
-1. Open the app. It will ask for **notification permission** — say yes (without it the foreground-service notification can't show, and Android may kill the server).
-2. Tap **Disable battery optimization** and confirm — otherwise Android Doze will kill the server when the screen is off.
-3. Tap **Start server**. A persistent notification appears with the URL. The screen shows:
-   - `http://groceries.local:8080` (Bonjour name — best to bookmark)
-   - `http://<phone-IP>:8080` (raw LAN IP — survives Bonjour failures)
-4. On the phone, open Chrome → `http://localhost:8080` → menu → **Add to Home Screen**. You now have a standalone PWA.
-5. On the Mac, open Safari/Chrome → `http://groceries.local:8080`. Bookmark.
+1. Open the app. The grocery list appears immediately — the app *is* the PWA, hosted by its own bundled server and shown inside a WebView. It will ask for **notification permission** once; say yes so the foreground-service notification can show (without it Android may kill the server).
+2. Tap the ⚙ gear (top right). In Settings:
+   - Tap **Disable battery optimization** so Android Doze doesn't kill the server when the screen is off.
+   - Copy the LAN URL — either `http://groceries.local:8080` (Bonjour) or `http://<phone-IP>:8080` (raw LAN IP fallback) — for other devices.
+   - Hit **Done** (or system back) to return to the list.
+3. From any other device on the same WiFi, open the URL you copied. Bookmark it. The list syncs live both ways over Server-Sent Events.
 
 ## Use
 
@@ -56,9 +55,9 @@ All tests are split into four layers, in roughly increasing cost:
 ### Layer 1+2 — JVM unit + integration tests
 ```sh
 cd android
-JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :core:test
+./gradlew :core:test
 ```
-Runs in ~5s after the first build. Covers Store (17 tests) and the full REST + SSE API (13 tests, including three SSE scenarios against a real ephemeral port).
+Runs in ~5s after the first build. Covers Store and the full REST + SSE API (including a few SSE scenarios — keepalive cadence, multi-subscriber broadcast — against a real ephemeral port). If Gradle can't find a JDK, point `JAVA_HOME` at any JDK 21.
 
 ### Layer 3 — Playwright e2e against the real PWA
 ```sh

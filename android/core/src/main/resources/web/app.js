@@ -154,7 +154,12 @@ function attachRowHandlers(li) {
       consumed = true;
       li.classList.remove("pending-delete");
       timer = null;
-      onDelete(id);
+      // Don't delete outright — show a confirmation toast and require an
+      // explicit second tap on the Delete button. Optimistic rows are skipped
+      // (their tmp- ids would 404 on the API call).
+      const item = state.items.find((x) => x.id === id);
+      if (!item || isPending(id)) return;
+      showDeleteConfirm(id, item.text);
     }, 600);
   };
 
@@ -418,17 +423,43 @@ async function onClearAll() {
 }
 
 let toastTimer = null;
+// Toast doubles as both undo (post-delete) and delete-confirm (pre-delete). When
+// pendingDeleteId is set, the toast's action button means "confirm delete"; when
+// null, it means "undo the last action". Mutually exclusive: confirming or
+// dismissing a delete clears it; the subsequent undo toast then takes over.
+let pendingDeleteId = null;
+const DELETE_CONFIRM_MS = 3000;
 function showUndoToast(message) {
+  pendingDeleteId = null;
   toastTextEl.textContent = message;
+  toastUndoEl.textContent = "Undo";
+  toastUndoEl.classList.remove("danger");
   toastEl.hidden = false;
   if (toastTimer) clearTimeout(toastTimer);
   toastTimer = setTimeout(hideToast, 5000);
 }
+function showDeleteConfirm(id, text) {
+  pendingDeleteId = id;
+  toastTextEl.textContent = `Delete "${text}"?`;
+  toastUndoEl.textContent = "Delete";
+  toastUndoEl.classList.add("danger");
+  toastEl.hidden = false;
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(hideToast, DELETE_CONFIRM_MS);
+}
 function hideToast() {
+  pendingDeleteId = null;
   toastEl.hidden = true;
   if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
 }
-async function onUndo() {
+async function onToastAction() {
+  if (pendingDeleteId !== null) {
+    const id = pendingDeleteId;
+    pendingDeleteId = null;
+    hideToast();
+    await onDelete(id);  // onDelete itself shows the post-delete undo toast
+    return;
+  }
   hideToast();
   try { await api.undo(); } catch {}
   // SSE will broadcast Added events back to us
@@ -444,12 +475,22 @@ function initSortable() {
     fallbackTolerance: DRAG_THRESHOLD,
     delay: 80,                  // hold time before drag activates (touch)
     delayOnTouchOnly: true,
+    // Tolerate up to 8px of finger wobble during the 80ms hold without aborting.
+    // Default is 0, which means the tiniest tremor while the user settles their
+    // finger on the dot glyph kills the drag attempt — symptom: "grabbing the
+    // dots exactly does nothing, but grabbing around them works".
+    touchStartThreshold: 8,
+    // Restrict drag initiation to the visible handles. Without this, drag could
+    // start from anywhere on the row, which conflicts with the row's own
+    // toggle/long-press handlers and made the handles' purpose ambiguous.
+    handle: ".handle",
     ghostClass: "sortable-ghost",
     chosenClass: "sortable-chosen",
     filter: ".empty",
-    // Whole row is a drag target. onStart fires only AFTER movement past fallbackTolerance,
-    // so a plain tap still reaches our pointerup handler and toggles. The row's own
-    // pointermove also calls cancel() on movement as a belt-and-suspenders.
+    // Drag only starts from .handle, so the row's pointer handlers (toggle on tap,
+    // delete on long-press) own everywhere else. onStart still aborts any pending
+    // row gesture as belt-and-suspenders for the case where the same handle press
+    // also happened to start a press timer somehow.
     onStart: (evt) => {
       evt.item.dispatchEvent(new CustomEvent("row-abort"));
     },
@@ -470,28 +511,119 @@ function initSortable() {
   });
 }
 
+// Reconnect state machine
+//
+// Idle Android radios silently drop established TCP sockets; HTTP errors during
+// WiFi handovers stutter for several seconds; an EventSource `error` event also
+// fires during the browser's *own* successful auto-retry. The naive "reconnect
+// after 2s on any error" loop hammers the server during outages and flickers the
+// offline pill on every blip. This block replaces it with:
+//   - exponential backoff with jitter on every retry, reset on the next success
+//   - a debounce before flipping `online → offline`, so transient errors are silent
+//   - a heartbeat-driven watchdog that force-reopens the EventSource if the
+//     server-side `event: keepalive` frames stop arriving (catches dead sockets
+//     the browser hasn't noticed yet)
+const RECONNECT_MAX_MS = 30_000;
+const OFFLINE_DEBOUNCE_MS = 500;
+const SSE_WATCHDOG_MS = 30_000;
+let reconnectAttempts = 0;
+let offlineDebounceTimer = null;
+let sseWatchdogTimer = null;
+let reconnectTimer = null;
+
+function nextBackoffMs() {
+  const base = Math.min(RECONNECT_MAX_MS, 1_000 * Math.pow(2, reconnectAttempts));
+  // Jitter dampens the thundering-herd case when multiple clients reconnect after
+  // the same network event. Test hook below reads window.__lastBackoffMs so the
+  // Playwright reconnect spec can assert "gap2 > gap1 * 1.5".
+  const jitter = Math.floor(Math.random() * 500);
+  const total = base + jitter;
+  window.__lastBackoffMs = total;
+  return total;
+}
+
+function markOnline() {
+  reconnectAttempts = 0;
+  if (offlineDebounceTimer) { clearTimeout(offlineDebounceTimer); offlineDebounceTimer = null; }
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  setOnline(true);
+}
+
+function deferOffline() {
+  // EventSource fires `error` even during successful internal retries — flipping
+  // to offline immediately would make the pill flicker on every WiFi blip. Only
+  // commit to offline if the failed state outlasts the debounce window.
+  if (offlineDebounceTimer || !state.online) return;
+  offlineDebounceTimer = setTimeout(() => {
+    offlineDebounceTimer = null;
+    setOnline(false);
+  }, OFFLINE_DEBOUNCE_MS);
+}
+
+function feedWatchdog() {
+  if (sseWatchdogTimer) clearTimeout(sseWatchdogTimer);
+  sseWatchdogTimer = setTimeout(() => {
+    sseWatchdogTimer = null;
+    // Heartbeat went silent: the TCP socket is probably dead even though the
+    // browser hasn't dispatched an error yet. Force a fresh connection.
+    if (es) { try { es.close(); } catch {} es = null; }
+    document.body.dataset.sse = "closed";
+    deferOffline();
+    scheduleReconnect();
+  }, SSE_WATCHDOG_MS);
+}
+
+function clearWatchdog() {
+  if (sseWatchdogTimer) { clearTimeout(sseWatchdogTimer); sseWatchdogTimer = null; }
+}
+
+function scheduleReconnect() {
+  if (reconnectTimer) return; // already pending
+  const delay = nextBackoffMs();
+  // Test hook: Playwright reads __reconnectLog to assert exponential growth
+  // across consecutive failures without depending on wall-clock timing.
+  (window.__reconnectLog ||= []).push({ at: Date.now(), delay });
+  reconnectAttempts++;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    refresh();
+  }, delay);
+}
+
 let es = null;
 function openEvents() {
-  if (es) es.close();
+  if (es) { try { es.close(); } catch {} }
   try {
     es = new EventSource("/api/events");
   } catch {
-    setOnline(false);
+    deferOffline();
+    scheduleReconnect();
     return;
   }
+  feedWatchdog();
   es.addEventListener("open", () => {
-    setOnline(true);
+    markOnline();
+    feedWatchdog();
     // Test hook: lets a second page wait until its SSE subscription is live before
     // expecting to receive broadcasts. Cheap to set, harmless in production.
     document.body.dataset.sse = "open";
   });
   es.addEventListener("change", (e) => {
+    feedWatchdog();
     try { applyChange(JSON.parse(e.data)); } catch {}
   });
+  es.addEventListener("keepalive", () => {
+    // Server emits these on a 15s cadence so we can prove the socket is alive
+    // even when no list edits are happening. Comment frames would feed the byte
+    // stream but be invisible to EventSource — this is dispatchable on purpose.
+    feedWatchdog();
+    markOnline();
+  });
   es.addEventListener("error", () => {
-    setOnline(false);
     document.body.dataset.sse = "closed";
-    setTimeout(refresh, 2000);
+    deferOffline();
+    clearWatchdog();
+    scheduleReconnect();
   });
 }
 
@@ -504,12 +636,12 @@ async function refresh() {
     // the user just added and would orphan the still-pending addOne's reconcile.
     const pending = state.items.filter((x) => x.id.startsWith("tmp-"));
     state.items = [...remote, ...pending];
-    setOnline(true);
+    markOnline();
     render();
     if (!es || es.readyState === 2) openEvents();
   } catch {
-    setOnline(false);
-    setTimeout(refresh, 3000);
+    deferOffline();
+    scheduleReconnect();
   }
 }
 
@@ -517,11 +649,34 @@ formEl.addEventListener("submit", onAdd);
 inputEl.addEventListener("paste", onPaste);
 clearDoneEl.addEventListener("click", onClearDone);
 clearAllEl.addEventListener("click", onClearAll);
-toastUndoEl.addEventListener("click", onUndo);
+toastUndoEl.addEventListener("click", onToastAction);
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") refresh();
 });
-window.addEventListener("online", refresh);
+// Defensive periodic resync. Visibility/online/SSE handlers above cover the
+// happy paths, but in rare cases (Android WebView quirks where visibilitychange
+// doesn't fire after a long background period, SSE silently dropping events
+// before the watchdog notices) the page can drift from the server. A cheap
+// 30s pull keeps it within one interval of authoritative server state.
+const PERIODIC_REFRESH_MS = 30_000;
+setInterval(() => {
+  if (document.visibilityState === "visible") refresh();
+}, PERIODIC_REFRESH_MS);
+// `pageshow` fires when the WebView is restored from BFCache, which doesn't
+// always trigger `visibilitychange`. Without this, a backgrounded Android
+// WebView could resume with a long-dead EventSource and never reconnect until
+// the user touched the input.
+window.addEventListener("pageshow", (e) => {
+  if (e.persisted || (es && es.readyState === 2)) refresh();
+});
+window.addEventListener("online", () => {
+  // Chromium can keep an EventSource in readyState=OPEN across a network drop
+  // even though the underlying TCP is dead — `refresh()`'s readyState check
+  // would then skip reopening. Force a fresh SSE on every regain-network event
+  // so we never trust a "looks open" socket that just survived a network blip.
+  if (es) { try { es.close(); } catch {} es = null; }
+  refresh();
+});
 window.addEventListener("offline", () => setOnline(false));
 
 if ("serviceWorker" in navigator) {

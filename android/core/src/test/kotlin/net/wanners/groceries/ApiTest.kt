@@ -675,6 +675,55 @@ class ApiTest {
     }
 
     @Test
+    fun `SSE emits keepalive comment frames on idle connections`(@TempDir dir: File) {
+        // Idle SSE connections die silently when Android's radio sleeps or a proxy times
+        // out the TCP socket; the frontend watchdog needs a recurring heartbeat to count.
+        // We override the interval to 200ms so this test finishes in <1s instead of >15s.
+        val store = storeIn(dir)
+        val server = embeddedServer(ServerCIO, port = 0, host = "127.0.0.1") {
+            groceriesModule(store, sseKeepaliveIntervalMs = 200)
+        }
+        server.start(wait = false)
+        val port = runBlocking { server.resolvedConnectors().first().port }
+        val client = HttpClient(ClientCIO) {
+            install(ContentNegotiation) { json() }
+            defaultRequest { header("X-Grocery-Client", "1") }
+            expectSuccess = false
+        }
+        try {
+            runBlocking {
+                coroutineScope {
+                    val gotKeepalives = CompletableDeferred<Int>()
+                    val sawAnyChange = CompletableDeferred<Unit>()
+                    val subscriberJob = launch {
+                        client.prepareGet("http://127.0.0.1:$port/api/events").execute { resp ->
+                            val ch = resp.bodyAsChannel()
+                            var keepalives = 0
+                            while (!gotKeepalives.isCompleted) {
+                                val line = ch.readUTF8Line() ?: break
+                                if (line == "event: keepalive") {
+                                    keepalives++
+                                    if (keepalives >= 2) gotKeepalives.complete(keepalives)
+                                } else if (line == "event: change") {
+                                    // Should never happen — no writes occur in this test.
+                                    sawAnyChange.complete(Unit)
+                                }
+                            }
+                        }
+                    }
+                    val count = withTimeout(2_000) { gotKeepalives.await() }
+                    assertTrue(count >= 2, "expected ≥2 keepalive frames, got $count")
+                    assertFalse(sawAnyChange.isCompleted, "no change frame should have arrived in an idle test")
+                    subscriberJob.cancel()
+                }
+            }
+        } finally {
+            client.close()
+            server.stop(50, 200)
+        }
+    }
+
+    @Test
     fun `SSE returns 503 above MAX_SSE concurrent subscribers`(@TempDir dir: File) = withRealServer(dir) { port, client ->
         runBlocking {
             coroutineScope {

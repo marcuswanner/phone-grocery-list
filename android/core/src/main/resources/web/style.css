@@ -6,7 +6,11 @@
   --accent: #1f6feb;
   --done: #bbb;
   --danger: #d33;
-  --row-h: 56px;
+  /* em-based so row height grows with the user's accessibility text-size
+     setting; pure-px would stay 56 even when text rendered taller and overflowed. */
+  --row-h: 3.3em;
+  --handle-w: 1.9em;
+  --handle-w-right: 5.6em;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -20,8 +24,13 @@
 }
 
 * { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; height: 100%; }
+html, body { margin: 0; padding: 0; }
 body {
+  /* dvh sizes directly to the viewport without depending on a height-resolving
+     parent chain. Some Android WebView configurations leave html/body with 0
+     resolved height under `height: 100%`, which collapses the flex children
+     (notably `main`) and pushes the list off-viewport behind the sticky form. */
+  min-height: 100dvh;
   background: var(--bg);
   color: var(--fg);
   font: 17px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -47,7 +56,9 @@ li.item {
   min-height: var(--row-h);
   display: flex;
   align-items: center;
-  padding: 0 20px 0 4px;
+  /* No right padding: lets the right drag handle sit flush against the screen
+     edge so the thumb can grab it without precision-aiming inward. */
+  padding: 0 0 0 4px;
   border-bottom: 1px solid var(--line);
   user-select: none;
   -webkit-tap-highlight-color: transparent;
@@ -55,21 +66,36 @@ li.item {
   background: var(--bg);
 }
 li.item .handle {
-  width: 32px;
-  height: 44px;
+  width: var(--handle-w);
+  /* Stretch to the full row height. The previous fixed 44px height left a ~6px
+     dead strip above and below the handle, where touches landed on the row
+     instead and got interpreted as toggle/long-press. */
+  align-self: stretch;
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--muted);
-  font-size: 18px;
+  font-size: 1.1em;
   line-height: 1;
   letter-spacing: -3px;
   cursor: grab;
   flex: none;
   user-select: none;
 }
-li.item .handle:active { cursor: grabbing; }
-li.item .handle-right { margin-left: 4px; width: 72px; }
+li.item .handle:active {
+  cursor: grabbing;
+  /* Visible confirmation that the press registered, so a user holding for the
+     ~80ms drag-activation delay knows their tap landed on the handle and not
+     in dead space next to it. */
+  background: rgba(127, 127, 127, 0.18);
+  color: var(--fg);
+}
+/* Wider than the left handle on purpose: right-handed users grab the edge of the
+   screen, so the right handle is the primary reorder target. ~5.6em gives the
+   thumb real estate (≈96px at default font) and scales with the user's text-size
+   accessibility preference, without consuming so much row width that the item
+   text gets cramped. */
+li.item .handle-right { margin-left: 4px; width: var(--handle-w-right); }
 li.item.sortable-ghost { opacity: 0.35; }
 li.item.sortable-chosen { background: rgba(127, 127, 127, 0.08); }
 li.item .check {
@@ -192,3 +218,6 @@ li.item.empty {
   -webkit-tap-highlight-color: transparent;
 }
 .toast-action:hover { background: rgba(255, 255, 255, 0.08); }
+/* Reused by the delete-confirm flow — same toast widget, but the action button
+   reads as destructive so the user knows Delete commits, not undoes. */
+.toast-action.danger { color: var(--danger); }

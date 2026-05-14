@@ -28,6 +28,10 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
 import io.ktor.utils.io.writeStringUtf8
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.merge
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -58,6 +62,11 @@ sealed interface ApiEvent {
     @Serializable
     @SerialName("reordered")
     data class Reordered(val ids: List<String>) : ApiEvent
+}
+
+private sealed interface SseFrame {
+    data class Change(val change: net.wanners.groceries.Change) : SseFrame
+    object Keepalive : SseFrame
 }
 
 private val apiJson = Json {
@@ -107,6 +116,10 @@ fun Application.groceriesModule(
     // foreign-IP rejection path.
     remoteHostResolver: (io.ktor.server.application.ApplicationCall) -> String? = { it.request.local.remoteHost },
     rateLimiter: RateLimiter = RateLimiter(),
+    // Tunable for tests: production wants a healthy 15s heartbeat so Android's radio
+    // and any intermediate proxies don't garbage-collect an idle SSE TCP connection;
+    // tests want sub-second cadence so they can assert delivery without sleeping.
+    sseKeepaliveIntervalMs: Long = 15_000,
 ) {
     intercept(io.ktor.server.application.ApplicationCallPipeline.Plugins) {
         val host = remoteHostResolver(call)
@@ -243,13 +256,31 @@ fun Application.groceriesModule(
                 call.respondBytesWriter(contentType = ContentType.Text.EventStream) {
                     writeStringUtf8(": connected\n\n")
                     flush()
+                    val keepalives = flow<SseFrame> {
+                        while (true) {
+                            delay(sseKeepaliveIntervalMs)
+                            emit(SseFrame.Keepalive)
+                        }
+                    }
+                    val changes = store.changes.map<Change, SseFrame> { SseFrame.Change(it) }
                     try {
-                        store.changes.collect { change ->
-                            val payload = apiJson.encodeToString(
-                                ApiEvent.serializer(),
-                                change.toApi(),
-                            )
-                            writeStringUtf8("event: change\ndata: $payload\n\n")
+                        // merge() means a single collector → single sequential writer, so
+                        // keepalive bytes can never interleave with a change frame's bytes.
+                        merge(changes, keepalives).collect { frame ->
+                            when (frame) {
+                                is SseFrame.Change -> {
+                                    val payload = apiJson.encodeToString(
+                                        ApiEvent.serializer(),
+                                        frame.change.toApi(),
+                                    )
+                                    writeStringUtf8("event: change\ndata: $payload\n\n")
+                                }
+                                // Real `event:`+`data:` (not a `:` comment): browsers expose
+                                // dispatchable events to JS for these, so the frontend watchdog
+                                // can observe heartbeats directly. A bare comment frame would
+                                // keep the TCP socket alive but be invisible to EventSource.
+                                SseFrame.Keepalive -> writeStringUtf8("event: keepalive\ndata: ok\n\n")
+                            }
                             flush()
                         }
                     } catch (_: CancellationException) {
