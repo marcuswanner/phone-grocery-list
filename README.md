@@ -69,8 +69,11 @@ npm test
 ```
 Playwright boots `:core` via `start-server.sh` on port 38080, runs the seven scenarios (add, toggle, delete, live sync, reconnect, manifest+SW registration, offline shell render), then tears the server down.
 
-### Layer 4 — Android instrumented tests
-Not yet wired up; only needed for the foreground-service lifecycle and mDNS registration. Verified manually for now (see "First-launch flow" above).
+### Layer 4 — Playwright against the real phone
+```sh
+./upload-and-test.sh
+```
+Builds + installs the debug APK, starts `ServerService` via adb, resolves the phone URL (tries `groceries.local` first, falls back to the WiFi IP via `adb shell ip route`), and runs the Playwright suite against the phone over WiFi. Backs up `items.json` via `run-as` first and restores it on exit (even on failure), so it doesn't eat your real grocery list. Requires one authorised adb device on the same WiFi as the Mac.
 
 ### Manual verification
 Some behavior is not worth automating:

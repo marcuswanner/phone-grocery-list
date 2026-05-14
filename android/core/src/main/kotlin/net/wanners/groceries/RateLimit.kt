@@ -8,8 +8,11 @@ import java.util.concurrent.ConcurrentHashMap
  * client IP on a home LAN, the map will never grow beyond a handful of entries.
  */
 class RateLimiter(
-    private val capacity: Double = 30.0,
-    private val refillPerSecond: Double = 10.0,
+    // Calibrated for "anyone on your LAN" trust, not adversarial DoS. A human
+    // pasting a 50-item shopping list bursts ~50 POSTs at once and we don't
+    // want that to trip; 300 capacity / 100 refill leaves clear headroom.
+    private val capacity: Double = 300.0,
+    private val refillPerSecond: Double = 100.0,
     private val now: () -> Long = System::currentTimeMillis,
 ) {
     private data class Bucket(var tokens: Double, var lastRefillMs: Long)

@@ -3,9 +3,9 @@ import { test, expect, type Page, type APIRequestContext } from "@playwright/tes
 const CLIENT_HEADER = { "X-Grocery-Client": "1" };
 
 async function clearList(req: APIRequestContext) {
-  const r = await req.get("/api/items");
-  const items: { id: string }[] = await r.json();
-  for (const i of items) await req.delete(`/api/items/${i.id}`, { headers: CLIENT_HEADER });
+  // One POST instead of N DELETEs: keeps us well under the per-IP rate limit
+  // when running over LAN (loopback is exempt, so :core test runs never hit it).
+  await req.post("/api/clear-all", { headers: CLIENT_HEADER });
 }
 
 test.beforeEach(async ({ request }) => {
@@ -99,9 +99,11 @@ test("toggle flow: click strikes through, click again un-strikes", async ({ page
 test("delete flow: long-press removes row", async ({ page }) => {
   await page.goto("/");
   await addItem(page, "bread");
-  const row = page.locator("li.item").first();
-  // hover auto-waits for the row to be stable/actionable — avoids boundingBox races with re-renders
-  await row.hover();
+  // Target the .text span specifically: the row's bounding-box center falls
+  // inside the wide right drag handle, whose pointerdown handler short-circuits
+  // before the long-press timer starts.
+  const text = page.locator("li.item .text").first();
+  await text.hover();
   await page.mouse.down();
   await page.waitForTimeout(800);
   await page.mouse.up();
@@ -154,6 +156,10 @@ test("reconnect: B keeps receiving updates after a network blip", async ({ brows
 test("PWA: manifest is valid and service worker registers", async ({ page }) => {
   await page.goto("/");
   const manifestResp = await page.request.get("/manifest.webmanifest");
+  // Note: the SW-registers half of this test only works against a secure context
+  // (loopback or HTTPS). Against a phone over LAN IP / mDNS that's not secure,
+  // so navigator.serviceWorker.register is no-op. We still assert manifest +
+  // icon serving above; the SW assertion below is gated by the same env flag.
   expect(manifestResp.ok()).toBeTruthy();
   const manifest = await manifestResp.json();
   expect(manifest.name).toBe("Groceries");
@@ -168,6 +174,7 @@ test("PWA: manifest is valid and service worker registers", async ({ page }) => 
   expect(svgResp.headers()["content-type"]).toContain("svg");
   expect(await svgResp.text()).toContain("<svg");
 
+  if (process.env.PLAYWRIGHT_BASE_URL) return;
   const swReady = await page.evaluate(async () => {
     if (!("serviceWorker" in navigator)) return false;
     const reg = await navigator.serviceWorker.ready;
@@ -235,8 +242,8 @@ test("undo: deleting a single item shows toast and restores on Undo", async ({ p
   await addItem(page, "milk");
   await addItem(page, "eggs");
   await addItem(page, "bread");
-  // long-press eggs
-  const eggs = page.locator('li.item:has-text("eggs")');
+  // long-press eggs — target the text span, not the row (see note on the delete flow test)
+  const eggs = page.locator('li.item:has-text("eggs") .text');
   await eggs.hover();
   await page.mouse.down();
   await page.waitForTimeout(800);
@@ -270,7 +277,7 @@ test("undo: Clear all + Undo restores the whole list", async ({ page }) => {
 test("undo: toast auto-dismisses after 5 seconds", async ({ page }) => {
   await page.goto("/");
   await addItem(page, "milk");
-  const milk = page.locator('li.item:has-text("milk")');
+  const milk = page.locator('li.item:has-text("milk") .text');
   await milk.hover();
   await page.mouse.down();
   await page.waitForTimeout(800);
@@ -288,7 +295,16 @@ test("reorder: POST /api/reorder updates order and broadcasts via SSE", async ({
   await addItem(page, "milk");
   await addItem(page, "eggs");
   await addItem(page, "bread");
-  const items: { id: string; text: string }[] = await page.request.get("/api/items").then((r) => r.json());
+  // addItem returns once the optimistic LI is visible; the server POST is still
+  // in-flight over LAN, so wait for the server to actually have all three.
+  await expect
+    .poll(async () => (await page.request.get("/api/items").then((r) => r.json())).length, {
+      timeout: 5_000,
+    })
+    .toBe(3);
+  const items: { id: string; text: string }[] = await page.request
+    .get("/api/items")
+    .then((r) => r.json());
   const newOrder = [items[2].id, items[0].id, items[1].id]; // bread, milk, eggs
   const r = await page.request.post("/api/reorder", {
     data: { ids: newOrder },
@@ -303,7 +319,10 @@ test("reorder: POST /api/reorder updates order and broadcasts via SSE", async ({
 test("CSRF: a cross-origin page cannot POST a state-changing write", async ({ browser }) => {
   // Chrome considers http://localhost:38080 and http://127.0.0.1:38080 different origins
   // even though both hit the same server, which lets us simulate a cross-origin POST
-  // without standing up a second HTTP server.
+  // without standing up a second HTTP server. That trick only works when the target is
+  // loopback on a known port — when retargeted at a real phone it's not reproducible,
+  // so skip there. The same code path is covered by :core JVM tests.
+  test.skip(!!process.env.PLAYWRIGHT_BASE_URL, "loopback-origin trick only works against local :core");
   const ctx = await browser.newContext();
   const page = await ctx.newPage();
   try {
@@ -341,6 +360,9 @@ test("CSRF: a cross-origin page cannot POST a state-changing write", async ({ br
 });
 
 test("offline shell: page loads from cache when network is gone", async ({ browser }) => {
+  // Same secure-context limitation as the SW assertion above: SW won't register
+  // against a non-loopback HTTP origin, so no cache → no offline shell.
+  test.skip(!!process.env.PLAYWRIGHT_BASE_URL, "SW only registers in secure contexts");
   const ctx = await browser.newContext();
   const page = await ctx.newPage();
   try {
