@@ -1,9 +1,9 @@
 # Groceries
 
 <p align="center">
-  <img src="docs/screenshots/phone-app.png" alt="Groceries app on the phone" width="220">
+  <img src="docs/screenshots/phone-app.png" alt="Groceries app on the phone" height="400">
   &nbsp;
-  <img src="docs/screenshots/desktop-browser.png" alt="Same list rendered in a desktop browser at the phone's LAN URL" width="440">
+  <img src="docs/screenshots/desktop-browser.png" alt="Same list rendered in a desktop browser at the phone's LAN URL" height="400">
 </p>
 
 A silly little mobile grocery list with a website for simultaneous edits.
