@@ -44,9 +44,17 @@ cd android
 
 - Type, hit Enter → adds an item.
 - Tap a row → marks done (strikethrough). Tap again → un-done.
-- Long-press a row (~600ms) → deletes.
+- Long-press a row (~600ms) → asks to confirm, tap **Delete** in the toast to commit.
 - Updates from any client appear live in others (SSE), within ~1s on the same WiFi.
 - Pull-to-refresh works as a manual sync.
+
+## What it looks like
+
+| On the phone (in-app WebView) | From a laptop browser at the LAN URL |
+| :---: | :---: |
+| <img src="docs/screenshots/phone-app.png" alt="Groceries app on the phone showing a dark-mode list" width="280"> | <img src="docs/screenshots/desktop-browser.png" alt="Same list rendered in a desktop browser at the phone's LAN URL" width="600"> |
+
+Same server, same list, live-synced both ways over SSE.
 
 ## Testing
 
