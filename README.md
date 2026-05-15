@@ -1,5 +1,11 @@
 # Groceries
 
+<p align="center">
+  <img src="docs/screenshots/phone-app.png" alt="Groceries app on the phone" width="220">
+  &nbsp;
+  <img src="docs/screenshots/desktop-browser.png" alt="Same list rendered in a desktop browser at the phone's LAN URL" width="440">
+</p>
+
 A silly little mobile grocery list with a website for simultaneous edits.
 
 It's a web app in an Android app serving a shopping list editor over local WiFi. From any mDNS-supporting browser on the same network you open `http://groceries.local:8080`, add things, mark them done; the phone (and any other browser pointed at the same URL) sees the change live via Server-Sent Events. The list lives in one JSON file on the phone — no cloud, no account, no sync service.
@@ -47,14 +53,6 @@ cd android
 - Long-press a row (~600ms) → asks to confirm, tap **Delete** in the toast to commit.
 - Updates from any client appear live in others (SSE), within ~1s on the same WiFi.
 - Pull-to-refresh works as a manual sync.
-
-## What it looks like
-
-| On the phone (in-app WebView) | From a laptop browser at the LAN URL |
-| :---: | :---: |
-| <img src="docs/screenshots/phone-app.png" alt="Groceries app on the phone showing a dark-mode list" width="280"> | <img src="docs/screenshots/desktop-browser.png" alt="Same list rendered in a desktop browser at the phone's LAN URL" width="600"> |
-
-Same server, same list, live-synced both ways over SSE.
 
 ## Testing
 
