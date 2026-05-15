@@ -63,8 +63,14 @@ fi
 export JAVA_HOME="${JAVA_HOME:-/Applications/Android Studio.app/Contents/jbr/Contents/Home}"
 
 backup_items() {
-  if "$ADB" shell "run-as $PKG test -f files/items.json" 2>/dev/null; then
-    "$ADB" exec-out "run-as $PKG cat files/items.json" > "$BACKUP"
+  # base64 round-trips the bytes through stdout cleanly. The previous
+  # `adb exec-out cat > $BACKUP` was unreliable on wireless adb — it would
+  # silently truncate to 0 bytes when the pipe stalled, and the restore
+  # branch then wipes the user's list because $BACKUP looks empty.
+  local b64
+  b64=$("$ADB" shell "run-as $PKG sh -c 'test -f files/items.json && base64 -w 0 files/items.json'" 2>/dev/null | tr -d '\r')
+  if [ -n "$b64" ]; then
+    printf '%s' "$b64" | base64 --decode > "$BACKUP"
     echo "   backed up $(wc -c < "$BACKUP" | tr -d ' ') bytes → $BACKUP"
   else
     : > "$BACKUP"
@@ -77,8 +83,26 @@ restore_items() {
   # force-stop kills the in-memory Store so the next launch re-reads disk.
   "$ADB" shell "am force-stop $PKG" >/dev/null 2>&1 || true
   if [ -s "$BACKUP" ]; then
-    if cat "$BACKUP" | "$ADB" exec-out "run-as $PKG sh -c 'cat > files/items.json'" >/dev/null; then
-      echo "   restored from $BACKUP — re-open the app on the phone to bring the server back"
+    # base64-on-the-command-line: 100% reliable on wireless adb where
+    # `cat $BACKUP | adb exec-out 'cat > …'` periodically hangs forever.
+    # Items.json is bounded to ~64KiB so the encoded payload fits comfortably
+    # within the shell command-line limit.
+    local b64
+    b64=$(base64 -i "$BACKUP" | tr -d '\n')
+    if "$ADB" shell "run-as $PKG sh -c 'echo $b64 | base64 -d > files/items.json'" >/dev/null 2>&1; then
+      # Verify the bytes actually landed — the shell command above can succeed
+      # even when run-as silently swallows the write (e.g. SELinux quirks).
+      local on_device
+      on_device=$("$ADB" shell "run-as $PKG sh -c 'wc -c < files/items.json'" 2>/dev/null | tr -d '\r ')
+      local local_size
+      local_size=$(wc -c < "$BACKUP" | tr -d ' ')
+      if [ "$on_device" = "$local_size" ]; then
+        echo "   restored $on_device bytes from $BACKUP"
+        # Force-stopped above; the app is in a clean stopped state and the
+        # user's next launch will load the restored items.json fresh.
+      else
+        echo "   WARN: restore size mismatch (device=$on_device local=$local_size); backup kept at $BACKUP" >&2
+      fi
     else
       echo "   WARN: restore failed; backup kept at $BACKUP" >&2
     fi
